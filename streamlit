@@ -1,87 +1,95 @@
 import streamlit as st
-import pandas as pd
+import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
+import io
 
-st.set_page_config(page_title="Color Detection from Images", layout="wide")
-st.title("Color Detection from Images")
-st.write("Upload an image. Click anywhere on the image to detect the color at that pixel.")
+# Set page config
+st.set_page_config(
+    page_title="Color Detection App",
+    page_icon="🎨",
+    layout="wide"
+)
 
-# Upload image file
-uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
+# Function to load the color dataset
+@st.cache_data
+def load_color_data():
+    try:
+        df = pd.read_csv('colors.csv')
+        return df
+    except FileNotFoundError:
+        st.error("Colors dataset not found. Please ensure colors.csv is in the same directory.")
+        return None
 
-if uploaded_file is not None:
-    # Load the uploaded image using PIL
-    image = Image.open(uploaded_file)
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+# Function to find the closest color name
+def get_color_name(R, G, B, df):
+    minimum = 1000
+    color_name = ""
     
-    # Convert image to numpy array
-    image_np = np.array(image)
+    for i in range(len(df)):
+        d = abs(R - df.loc[i, "R"]) + abs(G - df.loc[i, "G"]) + abs(B - df.loc[i, "B"])
+        if d <= minimum:
+            minimum = d
+            color_name = df.loc[i, "Color Name"]
+    
+    return color_name
 
-    st.markdown("**Instruction:** Click on the image (a red point will be drawn) to capture the pixel color.")
+# Main app
+def main():
+    st.title("🎨 Color Detection App")
+    st.write("Upload an image and click anywhere to detect the color!")
 
-    # Set up canvas with the image as background to capture click events
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # A semi-transparent fill color
-        stroke_width=10,
-        stroke_color="#ff0000",  # Color for the clickable point marker
-        background_image=image,
-        update_streamlit=True,
-        height=image.height,
-        width=image.width,
-        drawing_mode="point",  # Use point drawing mode
-        key="canvas",
-    )
+    # Load color dataset
+    df = load_color_data()
+    if df is None:
+        return
 
-    # Check if a click has been made and process the click data
-    if canvas_result.json_data is not None and "objects" in canvas_result.json_data:
-        if len(canvas_result.json_data["objects"]) > 0:
-            # Use the first point data
-            obj = canvas_result.json_data["objects"][0]
-            # Get the point coordinates
-            x = int(obj["left"])
-            y = int(obj["top"])
+    # File uploader
+    uploaded_file = st.file_uploader("Choose an image...", type=['jpg', 'jpeg', 'png'])
+    
+    if uploaded_file is not None:
+        # Convert the file to an opencv image
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Create two columns
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Display the image
+            st.image(image, caption='Uploaded Image', use_column_width=True)
             
-            if 0 <= x < image_np.shape[1] and 0 <= y < image_np.shape[0]:
-                r, g, b = image_np[y, x][:3]
+            # Get image dimensions
+            h, w = image.shape[:2]
+            
+            # Create sliders for X and Y coordinates
+            st.write("Select pixel coordinates to detect color:")
+            x = st.slider("X coordinate", 0, w-1, w//2)
+            y = st.slider("Y coordinate", 0, h-1, h//2)
+            
+            # Draw a marker at selected point
+            marked_image = image.copy()
+            cv2.circle(marked_image, (x, y), 5, (255, 0, 0), -1)  # Red circle at selected point
+            st.image(marked_image, caption='Selected Point', use_column_width=True)
+            
+            # Get RGB values
+            B, G, R = image[y, x]
+            
+            # Get color name
+            color_name = get_color_name(R, G, B, df)
+            
+            with col2:
+                st.write("Selected Color Information:")
+                st.markdown(f"**Position:** ({x}, {y})")
+                st.markdown(f"**Color Name:** {color_name}")
+                st.markdown(f"**RGB Value:** ({R}, {G}, {B})")
                 
-                st.markdown(f"**Coordinates:** ({x}, {y})")
-                st.markdown(f"**RGB Value:** ({r}, {g}, {b})")
-                
-                # Load the predefined colors dataset from colors.csv
-                try:
-                    df_colors = pd.read_csv("colors.csv", names=["color", "R", "G", "B"], header=None)
-                except Exception as e:
-                    st.error(f"Error loading colors dataset: {e}")
-                    st.stop()
-                    
-                # Function to calculate Manhattan distance between two colors
-                def calc_distance(r1, g1, b1, r2, g2, b2):
-                    return abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
-                
-                minimum_distance = float("inf")
-                closest_color_name = None
-                
-                # Iterate through available colors to find the best match
-                for index, row in df_colors.iterrows():
-                    distance = calc_distance(r, g, b, int(row["R"]), int(row["G"]), int(row["B"]))
-                    if distance < minimum_distance:
-                        minimum_distance = distance
-                        closest_color_name = row["color"]
-                
-                st.markdown(f"**Detected Color:** {closest_color_name}")
-                
-                # Display a swatch of the detected color
-                st.markdown(
-                    f"<div style='width:100px; height:100px; background-color: rgb({r}, {g}, {b});"
-                    "border: 1px solid #000;'></div>", 
-                    unsafe_allow_html=True
-                )
-            else:
-                st.error("Clicked coordinates are outside the image boundaries.")
-        else:
-            st.info("Click on the image to detect a color.")
-else:
-    st.info("Please upload an image file to begin.")
+                # Display color box
+                color_box = np.zeros((100, 100, 3), dtype=np.uint8)
+                color_box[:] = [R, G, B]
+                st.image(color_box, caption="Selected Color", use_column_width=True)
+
+if __name__ == "__main__":
+    main() 
